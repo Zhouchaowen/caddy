@@ -627,12 +627,19 @@ func normalizeWebsocketHeaders(header http.Header) {
 // properties of the cloned request and should be done just once (before
 // proxying) regardless of proxy retries. This assumes that no mutations
 // of the cloned request are performed by h during or after proxying.
+/*
+在把客户端请求代理到上游之前，做一次“安全的拷贝并预处理”——克隆请求并对该克隆做所有为上游准备的改动（重写、缓冲、头部清理、设置转发相关头等）。
+它只做一次（在 ServeHTTP 的最开始被调用一次），之后代理循环（可能重试多个上游）会基于这个已准备好的克隆请求进行每次尝试。
+*/
 func (h Handler) prepareRequest(req *http.Request, repl *caddy.Replacer) (*http.Request, error) {
 	req = cloneRequest(req)
 
 	// if enabled, perform rewrites on the cloned request; if
 	// the method is GET or HEAD, prevent the request body
 	// from being copied to the upstream
+	/*
+		如果配置了 reverse_proxy.rewrite，会对克隆的请求应用 rewrite 规则（可能变更方法和 URI）
+	*/
 	if h.Rewrite != nil {
 		changed := h.Rewrite.Rewrite(req, repl)
 		if changed && (h.Rewrite.Method == "GET" || h.Rewrite.Method == "HEAD") {
@@ -649,6 +656,11 @@ func (h Handler) prepareRequest(req *http.Request, repl *caddy.Replacer) (*http.
 	// attacks, so it is strongly recommended to only use this
 	// feature if absolutely required, if read timeouts are
 	// set, and if body size is limited
+	/*
+		bufferedBody 会把请求体读入缓冲（使用 bufPool），并返回一个 bodyReadCloser 包装，
+		使后续可以在重试场景里重新从缓冲中读取完整 body（重要：如果要做跨上游重试，且需要将 body 重新发送，必须把 body 可重放）。
+		如果缓冲完全读到 EOF，会设置 Content-Length 以便某些后端（如 fastcgi/php-fpm）能正确处理。
+	*/
 	if h.RequestBuffers != 0 && req.Body != nil {
 		var readBytes int64
 		req.Body, readBytes = h.bufferedBody(req.Body, h.RequestBuffers)
@@ -659,14 +671,24 @@ func (h Handler) prepareRequest(req *http.Request, repl *caddy.Replacer) (*http.
 		}
 	}
 
+	/*
+		这是为了解决 Go 标准库中 transport 重试行为（参见注释中的 golang issue）。
+		把 Body 设为 nil 能避免某些场景下 transport 无法重试或重复读取导致的问题。
+	*/
 	if req.ContentLength == 0 {
 		req.Body = nil // Issue golang/go#16036: nil Body for http.Transport retries
 	}
 
+	/*
+		关闭请求的 Connection 默认值（长连接）
+	*/
 	req.Close = false
 
 	// if User-Agent is not set by client, then explicitly
 	// disable it so it's not set to default value by std lib
+	/*
+		标准库如果没有 User-Agent 会插入默认值；这里显式设置为空，表示不想发送 User-Agent（除非客户端已提供）
+	*/
 	if _, ok := req.Header["User-Agent"]; !ok {
 		req.Header.Set("User-Agent", "")
 	}
@@ -679,10 +701,19 @@ func (h Handler) prepareRequest(req *http.Request, repl *caddy.Replacer) (*http.
 	// header field if the request might have been subject to a replay and
 	// might already have been forwarded by it or another instance
 	// (see Section 6.2)."
+	/*
+		如果请求来自 TLS 且握手未完成（可能是早期数据/0-RTT），根据 RFC 8470 在转发时加 Early-Data: 1，表明该请求可能被重放/转发。
+	*/
 	if req.TLS != nil && !req.TLS.HandshakeComplete {
 		req.Header.Set("Early-Data", "1")
 	}
 
+	/*
+		检测到需要升级 websocket ，如需要会把 Connection: Upgrade 和 Upgrade: <type> 恢复到 header 中，
+		并调用 normalizeWebsocketHeaders 将 Sec-Websocket-* 等首字母大小写规范化（由 RFC 6455 要求某些服务器对大小写敏感）。
+
+		遍历 hopHeaders，删除 hop-by-hop 头（包括 Connection、Transfer-Encoding、Upgrade 等），并为 Te 特例保留 "trailers" token（如果客户端想要 trailer）。
+	*/
 	reqUpgradeType := upgradeType(req.Header)
 	removeConnectionHeaders(req.Header)
 
@@ -711,6 +742,11 @@ func (h Handler) prepareRequest(req *http.Request, repl *caddy.Replacer) (*http.
 	}
 
 	// Set up the PROXY protocol info
+	/*
+		解析 address 为 netip.AddrPort；构造 ProxyProtocolInfo{AddrPort: addrPort} 并把它放入 req.Context
+		目的：transport 层（例如 HTTPTransport 如果启用了 proxy_protocol）可能需要把客户端地址信息放入到上游的 Host 或者 PROXY protocol header 中；
+		prepareRequest 在这里保存供下层使用。注意解析失败会尝试只解析地址（无端口）并继续。
+	*/
 	address := caddyhttp.GetVar(req.Context(), caddyhttp.ClientIPVarKey).(string)
 	addrPort, err := netip.ParseAddrPort(address)
 	if err != nil {
@@ -1272,6 +1308,10 @@ func (h Handler) bufferedBody(originalBody io.ReadCloser, limit int64) (io.ReadC
 // the headers and URL) so we can avoid manipulating the original
 // request when using it to proxy upstream. This prevents request
 // corruption and data races.
+/*
+拷贝最外层 http.Request 结构体，深拷贝 Header、Trailer、URL（并清空 URL.Scheme 和 URL.Host，避免把客户端请求行里的绝对 URL 覆盖代理的决策）
+目的是避免修改原始请求，防止并发修改或后续处理看到受污染的请求。
+*/
 func cloneRequest(origReq *http.Request) *http.Request {
 	req := new(http.Request)
 	*req = *origReq

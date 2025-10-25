@@ -154,6 +154,7 @@ func cmdReverseProxy(fs caddycmd.Flags) (int, error) {
 		}
 	}
 
+	// 创建上游池，拆分8001-8006这种格式为多个上游
 	upstreamPool := UpstreamPool{}
 	for _, toAddr := range toAddresses {
 		parsedAddr, err := caddy.ParseNetworkAddress(toAddr)
@@ -176,6 +177,7 @@ func cmdReverseProxy(fs caddycmd.Flags) (int, error) {
 		}
 	}
 
+	// 创建处理器
 	handler := Handler{
 		TransportRaw: caddyconfig.JSONModuleObject(ht, "protocol", "http", nil),
 		Upstreams:    upstreamPool,
@@ -241,11 +243,13 @@ func cmdReverseProxy(fs caddycmd.Flags) (int, error) {
 		handler.Headers.Request.Set.Set("Host", "{http.reverse_proxy.upstream.hostport}")
 	}
 
+	// 创建路由
 	route := caddyhttp.Route{
 		HandlersRaw: []json.RawMessage{
 			caddyconfig.JSONModuleObject(handler, "handler", "reverse_proxy", nil),
 		},
 	}
+	// 如果fromAddr.Host不为空，则添加host匹配条件
 	if fromAddr.Host != "" {
 		route.MatcherSetsRaw = []caddy.ModuleMap{
 			{
@@ -268,6 +272,7 @@ func cmdReverseProxy(fs caddycmd.Flags) (int, error) {
 		server.AutoHTTPS = &caddyhttp.AutoHTTPSConfig{DisableRedir: true}
 	}
 
+	// 创建 HTTP 应用,设置服务名称为proxy
 	httpApp := caddyhttp.App{
 		Servers: map[string]*caddyhttp.Server{"proxy": server},
 	}
@@ -287,6 +292,8 @@ func cmdReverseProxy(fs caddycmd.Flags) (int, error) {
 		appsRaw["tls"] = caddyconfig.JSON(tlsApp, nil)
 	}
 
+	// 上面的一切都是构建 Caddy.Config 对象而已；
+	// 最终构建成 Caddy.Config 对象，然后调用 caddy.Run 方法运行 Caddy
 	var false bool
 	cfg := &caddy.Config{
 		Admin: &caddy.AdminConfig{
@@ -305,6 +312,56 @@ func cmdReverseProxy(fs caddycmd.Flags) (int, error) {
 			},
 		}
 	}
+
+	caddy.Log().Info("caddy proxying", zap.Any("cfg", cfg))
+	/*
+		{
+			"cfg": {
+				"admin": {
+					"disabled": true,
+					"config": {
+						"persist": false
+					}
+				},
+				"apps": {
+					"http": {
+						"servers": {
+							"proxy": {
+								"listen": [
+									":888"
+								],
+								"routes": [
+									{
+										"match": [
+											{
+												"host": [
+													"example.com"
+												]
+											}
+										],
+										"handle": [
+											{
+												"handler": "reverse_proxy",
+												"transport": {
+													"protocol": "http",
+													"tls": {}
+												},
+												"upstreams": [
+													{
+														"dial": "example.com:9000"
+													}
+												]
+											}
+										]
+									}
+								]
+							}
+						}
+					}
+				}
+			}
+		}
+	*/
 
 	err = caddy.Run(cfg)
 	if err != nil {
