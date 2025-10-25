@@ -123,11 +123,13 @@ func RegisterHandlerDirective(dir string, setupFunc UnmarshalHandlerFunc) {
 			return nil, h.ArgErr()
 		}
 
+		// 匹配器相关(指令是否用了匹配器)
 		matcherSet, err := h.ExtractMatcherSet()
 		if err != nil {
 			return nil, err
 		}
 
+		// 处理指令,获得指令对应的处理函数 ServeHTTP(http.ResponseWriter, *http.Request, Handler) error
 		val, err := setupFunc(h)
 		if err != nil {
 			return nil, err

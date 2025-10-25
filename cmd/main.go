@@ -45,6 +45,7 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig"
 )
 
+// 在 init 函数中，设置 ACME 请求的 User-Agent，并设置默认的 ACME 同意
 func init() {
 	// set a fitting User-Agent for ACME requests
 	version, _ := caddy.Version()
@@ -63,6 +64,7 @@ func init() {
 
 // Main implements the main function of the caddy command.
 // Call this if Caddy is to be the main() of your program.
+// Main 函数是 Caddy 命令的入口，用于执行 Caddy 命令
 func Main() {
 	if len(os.Args) == 0 {
 		fmt.Printf("[FATAL] no arguments provided by OS; args[0] must be command\n")
@@ -100,6 +102,7 @@ func handlePingbackConn(conn net.Conn, expect []byte) error {
 // there is no config available. It prints any warnings to stderr,
 // and returns the resulting JSON config bytes along with
 // the name of the loaded config file (if any).
+// 加载配置文件，并使用指定的适配器进行适配
 func LoadConfig(configFile, adapterName string) ([]byte, string, error) {
 	return loadConfigWithLogger(caddy.Log(), configFile, adapterName)
 }
@@ -204,6 +207,7 @@ func loadConfigWithLogger(logger *zap.Logger, configFile, adapterName string) ([
 
 	// adapt config
 	if cfgAdapter != nil {
+		// 通过适配器将 Caddyfile 转换为 caddy.config JSON 配置的byte数组
 		adaptedConfig, warnings, err := cfgAdapter.Adapt(config, map[string]any{
 			"filename": configFile,
 		})
@@ -240,6 +244,7 @@ func loadConfigWithLogger(logger *zap.Logger, configFile, adapterName string) ([
 // config file used, not one to be discovered.
 // Each second the config files is loaded and parsed into an object
 // and is compared to the last config object that was loaded
+// 监听配置文件的变化，如果配置文件发生变化，则重新加载配置
 func watchConfigFile(filename, adapterName string) {
 	defer func() {
 		if err := recover(); err != nil {
@@ -341,6 +346,7 @@ func (f Flags) Duration(name string) time.Duration {
 	return val
 }
 
+// 加载环境变量文件，并设置环境变量
 func loadEnvFromFile(envFile string) error {
 	file, err := os.Open(envFile)
 	if err != nil {
@@ -464,6 +470,7 @@ func printEnvironment() {
 	}
 }
 
+// 设置资源限制
 func setResourceLimits(logger *zap.Logger) func() {
 	// Configure the maximum number of CPUs to use to match the Linux container quota (if any)
 	// See https://pkg.go.dev/runtime#GOMAXPROCS

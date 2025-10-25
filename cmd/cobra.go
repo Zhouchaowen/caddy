@@ -8,6 +8,7 @@ import (
 	"github.com/caddyserver/caddy/v2"
 )
 
+// 创建了一个默认的命令工厂，用于构建 Caddy 的根命令
 var defaultFactory = newRootCommandFactory(func() *cobra.Command {
 	return &cobra.Command{
 		Use: "caddy",
@@ -107,6 +108,7 @@ https://caddyserver.com/docs/running
 const fullDocsFooter = `Full documentation is available at:
 https://caddyserver.com/docs/command-line`
 
+// 在 init 函数中，使用 defaultFactory 构建 Caddy 的根命令，并设置版本模板和帮助模板
 func init() {
 	defaultFactory.Use(func(rootCmd *cobra.Command) {
 		rootCmd.SetVersionTemplate("{{.Version}}\n")
@@ -119,6 +121,7 @@ func onlyVersionText() string {
 	return f
 }
 
+// 辅助函数，将 Caddy 命令转换为 Cobra 命令
 func caddyCmdToCobra(caddyCmd Command) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   caddyCmd.Name + " " + caddyCmd.Usage,
@@ -136,6 +139,7 @@ func caddyCmdToCobra(caddyCmd Command) *cobra.Command {
 
 // WrapCommandFuncForCobra wraps a Caddy CommandFunc for use
 // in a cobra command's RunE field.
+// 辅助函数，将 Caddy 命令函数转换为 Cobra 命令函数
 func WrapCommandFuncForCobra(f CommandFunc) func(cmd *cobra.Command, _ []string) error {
 	return func(cmd *cobra.Command, _ []string) error {
 		status, err := f(Flags{cmd.Flags()})

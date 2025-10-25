@@ -346,6 +346,7 @@ func (app *App) Provision(ctx caddy.Context) error {
 		}
 		// pre-compile the primary handler chain, and be sure to wrap it in our
 		// route handler so that important security checks are done, etc.
+		// 预编译主处理程序链，并确保将其包装在我们的route handler中，以便重要的安全检查得以执行等。
 		primaryRoute := emptyHandler
 		if srv.Routes != nil {
 			err := srv.Routes.ProvisionHandlers(ctx, app.Metrics)
@@ -455,6 +456,50 @@ func (app *App) Start() error {
 		return fmt.Errorf("failed to set up server logger: %v", err)
 	}
 
+	/*
+		{
+			"config": {
+				"apps": {
+					"http": {
+						"servers": {
+							"srv0": {
+								"listen": [
+									": 8081"
+								],
+								"routes": [
+									{
+										"match": [
+											{
+												"host": [
+													"localhost"
+												]
+											}
+										],
+										"handle": [
+											{
+												"handler": "subroute",
+												"routes": [
+													{
+														"handle": [
+															{
+																"body": "Goodbye, world!",
+																"handler": "static_response"
+															}
+														]
+													}
+												]
+											}
+										],
+										"terminal": true
+									}
+								]
+							}
+						}
+					}
+				}
+			}
+		}
+	*/
 	for srvName, srv := range app.Servers {
 		srv.server = &http.Server{
 			ReadTimeout:       time.Duration(srv.ReadTimeout),

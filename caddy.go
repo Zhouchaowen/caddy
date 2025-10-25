@@ -66,31 +66,41 @@ import (
 // with `json` struct tags) if employing the module lifecycle (e.g. Provision
 // method calls).
 type Config struct {
-	Admin   *AdminConfig `json:"admin,omitempty"`
-	Logging *Logging     `json:"logging,omitempty"`
+	// 管理接口配置
+	Admin *AdminConfig `json:"admin,omitempty"`
+	// 日志配置
+	Logging *Logging `json:"logging,omitempty"`
 
 	// StorageRaw is a storage module that defines how/where Caddy
 	// stores assets (such as TLS certificates). The default storage
 	// module is `caddy.storage.file_system` (the local file system),
 	// and the default path
 	// [depends on the OS and environment](/docs/conventions#data-directory).
+	// 存储配置
 	StorageRaw json.RawMessage `json:"storage,omitempty" caddy:"namespace=caddy.storage inline_key=module"`
 
 	// AppsRaw are the apps that Caddy will load and run. The
 	// app module name is the key, and the app's config is the
 	// associated value.
+	// 应用配置
 	AppsRaw ModuleMap `json:"apps,omitempty" caddy:"namespace="`
 
+	// 运行时的应用实例
 	apps map[string]App
 
 	// failedApps is a map of apps that failed to provision with their underlying error.
-	failedApps   map[string]error
-	storage      certmagic.Storage
+	// 运行失败的应用实例
+	failedApps map[string]error
+	// 证书存储配置
+	storage certmagic.Storage
+	// 事件发射器
 	eventEmitter eventEmitter
 
+	// 取消函数
 	cancelFunc context.CancelFunc
 
 	// fileSystems is a dict of fileSystems that will later be loaded from and added to.
+	// 文件系统配置
 	fileSystems FileSystems
 }
 
@@ -203,6 +213,7 @@ func changeConfig(method, path string, input []byte, ifMatchHeader string, force
 		}
 	}
 
+	// 应用配置变更
 	err := unsyncedConfigAccess(method, path, input, nil)
 	if err != nil {
 		return err
@@ -218,6 +229,7 @@ func changeConfig(method, path string, input []byte, ifMatchHeader string, force
 	}
 
 	// if nothing changed, no need to do a whole reload unless the client forces it
+	// 如果配置没有变化且不强制重载，则返回
 	if !forceReload && bytes.Equal(rawCfgJSON, newCfg) {
 		Log().Info("config is unchanged")
 		return errSameConfig
@@ -235,6 +247,7 @@ func changeConfig(method, path string, input []byte, ifMatchHeader string, force
 
 	// load this new config; if it fails, we need to revert to
 	// our old representation of caddy's actual config
+	// 加载新配置，如果失败则回滚
 	err = unsyncedDecodeAndRun(newCfg, true)
 	if err != nil {
 		if len(rawCfgJSON) > 0 {
@@ -258,6 +271,7 @@ func changeConfig(method, path string, input []byte, ifMatchHeader string, force
 	// running (storing an encoded copy is not strictly
 	// necessary, but avoids an extra json.Marshal for
 	// each config change)
+	// 更新存储的配置
 	rawCfgJSON = newCfg
 	rawCfgIndex = idx
 
@@ -401,12 +415,14 @@ func unsyncedDecodeAndRun(cfgJSON []byte, allowPersist bool) error {
 // will want to use Run instead, which also
 // updates the config's raw state.
 func run(newCfg *Config, start bool) (Context, error) {
+	// 配置上下文初始化，
 	ctx, err := provisionContext(newCfg, start)
 	if err != nil {
 		globalMetrics.configSuccess.Set(0)
 		return ctx, err
 	}
 
+	// 如果不需要启动，直接返回上下文
 	if !start {
 		return ctx, nil
 	}
@@ -424,6 +440,7 @@ func run(newCfg *Config, start bool) (Context, error) {
 		}
 	}()
 
+	// 配置管理路由器
 	// Provision any admin routers which may need to access
 	// some of the other apps at runtime
 	err = ctx.cfg.Admin.provisionAdminRouters(ctx)
@@ -433,10 +450,13 @@ func run(newCfg *Config, start bool) (Context, error) {
 
 	// Start
 	err = func() error {
+		// 记录已启动的应用
 		started := make([]string, 0, len(ctx.cfg.apps))
 		for name, a := range ctx.cfg.apps {
+			// 启动应用
 			err := a.Start()
 			if err != nil {
+				// 如果启动失败，停止所有已启动的应用
 				// an app failed to start, so we need to stop
 				// all other apps that were already started
 				for _, otherAppName := range started {
@@ -455,9 +475,11 @@ func run(newCfg *Config, start bool) (Context, error) {
 	if err != nil {
 		return ctx, err
 	}
+	// 设置成功指标
 	globalMetrics.configSuccess.Set(1)
 	globalMetrics.configSuccessTime.SetToCurrentTime()
 
+	// 发送启动事件
 	// TODO: This event is experimental and subject to change.
 	ctx.emitEvent("started", nil)
 
@@ -561,8 +583,10 @@ func provisionContext(newCfg *Config, replaceAdminServer bool) (Context, error) 
 	}
 
 	// Load and Provision each app and their submodules
+	// 加载和 provision 每个应用和他们的子模块
 	err = func() error {
 		for appName := range newCfg.AppsRaw {
+			// TODO
 			if _, err := ctx.App(appName); err != nil {
 				return err
 			}

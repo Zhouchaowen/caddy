@@ -56,6 +56,7 @@ type Module interface {
 	// module. The returned ModuleInfo must have both
 	// a name and a constructor function. This method
 	// must not have any side-effects.
+	// 模块必须实现的接口用于构造模块信息
 	CaddyModule() ModuleInfo
 }
 
@@ -293,6 +294,8 @@ func getModuleNameInline(moduleNameKey string, raw json.RawMessage) (string, jso
 // garbage collection, opening files, starting goroutines etc.),
 // be sure to clean up properly by implementing the CleanerUpper
 // interface to avoid leaking resources.
+// 在模块加载后可能立即执行一些额外的设置操作，如果存在副作用，则需要实现CleanerUpper接口来清理资源。
+// 副作用：创建全局状态、任何其他需要垃圾回收的分配、打开文件、启动 goroutine等
 type Provisioner interface {
 	Provision(Context) error
 }

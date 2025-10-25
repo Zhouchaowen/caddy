@@ -1141,6 +1141,7 @@ traverseLoop:
 			// if the next part enters a slice, and the slice is our destination,
 			// handle it specially (because appending to the slice copies the slice
 			// header, which does not replace the original one like we want)
+			// 如果下一个部分进入一个切片，并且切片是我们目的地，则特别处理（因为附加到切片复制切片头，而不是像我们想要的那样替换原始头）
 			if arr, ok := v[part].([]any); ok && i == len(parts)-2 {
 				var idx int
 				if method != http.MethodPost {
@@ -1198,6 +1199,7 @@ traverseLoop:
 				case http.MethodPost:
 					// if the part is an existing list, POST appends to
 					// it, otherwise it just sets or creates the value
+					// 如果部分是一个现有列表，POST 追加到它，否则它只是设置或创建值
 					if arr, ok := v[part].([]any); ok {
 						if ellipses {
 							valArray, ok := val.([]any)

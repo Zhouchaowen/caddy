@@ -32,12 +32,14 @@ type Route struct {
 	// exclusive with others in its group; if a route belongs
 	// to a group, only the first matching route in that group
 	// will be executed.
+	// 这个字段用于将一个route分组，如果一个route属于一个组，那么只有第一个匹配的route会被执行
 	Group string `json:"group,omitempty"`
 
 	// The matcher sets which will be used to qualify this
 	// route for a request (essentially the "if" statement
 	// of this route). Each matcher set is OR'ed, but matchers
 	// within a set are AND'ed together.
+	// 这个字段用于定义一个route的匹配条件，每个matcher set是OR'ed，但是matcher set内部的matcher是AND'ed
 	MatcherSetsRaw RawMatcherSets `json:"match,omitempty" caddy:"namespace=http.matchers"`
 
 	// The list of handlers for this route. Upon matching a request, they are chained
@@ -93,9 +95,12 @@ type Route struct {
 	Terminal bool `json:"terminal,omitempty"`
 
 	// decoded values
+	// 解析后的 matcher 列表（实际的匹配条件）。
+	// 解析后的 handler 列表（实际的中间件 handler）。
 	MatcherSets MatcherSets         `json:"-"`
 	Handlers    []MiddlewareHandler `json:"-"`
 
+	// 已经包装好的 handler 链，用于实际运行时调用。
 	middleware []Middleware
 }
 
@@ -163,6 +168,7 @@ func (r *Route) ProvisionHandlers(ctx caddy.Context, metrics *Metrics) error {
 	r.middleware = []Middleware{}
 
 	// pre-compile the middleware handler chain
+	// 预编译中间件 handler 链
 	for _, midhandler := range r.Handlers {
 		r.middleware = append(r.middleware, wrapMiddleware(ctx, midhandler, metrics))
 	}
@@ -221,6 +227,7 @@ func (routes RouteList) ProvisionHandlers(ctx caddy.Context, metrics *Metrics) e
 // This should only be done either once during provisioning
 // for top-level routes, or on each request just before the
 // middleware chain is executed for subroutes.
+// 将routes包装成一个Handler，这个Handler就是中间件处理链
 func (routes RouteList) Compile(next Handler) Handler {
 	mid := make([]Middleware, 0, len(routes))
 	for _, route := range routes {
@@ -303,6 +310,7 @@ func wrapRoute(route Route) Middleware {
 // wrapMiddleware wraps mh such that it can be correctly
 // appended to a list of middleware in preparation for
 // compiling into a handler chain.
+// 这个函数用于将一个MiddlewareHandler包装成一个Middleware
 func wrapMiddleware(ctx caddy.Context, mh MiddlewareHandler, metrics *Metrics) Middleware {
 	handlerToUse := mh
 	if metrics != nil {

@@ -170,6 +170,7 @@ func cmdStart(fl Flags) (int, error) {
 }
 
 func cmdRun(fl Flags) (int, error) {
+	// 设置捕获信号
 	caddy.TrapSignals()
 
 	logger := caddy.Log()
@@ -185,6 +186,7 @@ func cmdRun(fl Flags) (int, error) {
 	pingbackFlag := fl.String("pingback")
 
 	// load all additional envs as soon as possible
+	// 加载环境变量文件
 	err := handleEnvFileFlag(fl)
 	if err != nil {
 		return caddy.ExitCodeFailedStartup, err
@@ -195,6 +197,7 @@ func cmdRun(fl Flags) (int, error) {
 		printEnvironment()
 	}
 
+	// 如果是恢复模式，尝试从自动保存文件加载
 	// load the config, depending on flags
 	var config []byte
 	if resumeFlag {
@@ -217,6 +220,8 @@ func cmdRun(fl Flags) (int, error) {
 			}
 		}
 	}
+
+	// 如果不是恢复模式，从指定配置文件加载
 	// we don't use 'else' here since this value might have been changed in 'if' block; i.e. not mutually exclusive
 	var configFile string
 	if !resumeFlag {
@@ -226,6 +231,7 @@ func cmdRun(fl Flags) (int, error) {
 		}
 	}
 
+	// 创建 PID 文件，如果加载配置需要很长时间（issue #5477）
 	// create pidfile now, in case loading config takes a while (issue #5477)
 	if pidfileFlag != "" {
 		err := caddy.PIDFile(pidfileFlag)
@@ -236,6 +242,53 @@ func cmdRun(fl Flags) (int, error) {
 		}
 	}
 
+	/*
+		{
+			"config": {
+				"apps": {
+					"http": {
+						"servers": {
+							"srv0": {
+								"listen": [
+									": 8081"
+								],
+								"routes": [
+									{
+										"match": [
+											{
+												"host": [
+													"localhost"
+												]
+											}
+										],
+										"handle": [
+											{
+												"handler": "subroute",
+												"routes": [
+													{
+														"handle": [
+															{
+																"body": "Goodbye, world!",
+																"handler": "static_response"
+															}
+														]
+													}
+												]
+											}
+										],
+										"terminal": true
+									}
+								]
+							}
+						}
+					}
+				}
+			}
+		}
+	*/
+	logger.Warn("config", zap.String("config", string(config)))
+
+	// 加载初始配置
 	// run the initial config
 	err = caddy.Load(config, true)
 	if err != nil {
@@ -243,6 +296,7 @@ func cmdRun(fl Flags) (int, error) {
 	}
 	logger.Info("serving initial configuration")
 
+	// 如果需要报告另一个进程的成功的启动，则现在通过回显 stdin 的内容来报告
 	// if we are to report to another process the successful start
 	// of the server, do so now by echoing back contents of stdin
 	if pingbackFlag != "" {
@@ -264,12 +318,14 @@ func cmdRun(fl Flags) (int, error) {
 		}
 	}
 
+	// 如果启用，则自动重新加载配置文件（这最好只用于开发！）
 	// if enabled, reload config file automatically on changes
 	// (this better only be used in dev!)
 	if watchFlag {
 		go watchConfigFile(configFile, configAdapterFlag)
 	}
 
+	// 警告如果环境没有提供足够的信息关于磁盘
 	// warn if the environment does not provide enough information about the disk
 	hasXDG := os.Getenv("XDG_DATA_HOME") != "" &&
 		os.Getenv("XDG_CONFIG_HOME") != "" &&
@@ -289,6 +345,7 @@ func cmdRun(fl Flags) (int, error) {
 		}
 	}
 
+	// 阻塞主线程，保持服务运行
 	select {}
 }
 

@@ -87,6 +87,7 @@ type Middleware func(Handler) Handler
 // responders (content origins) need not invoke the next handler,
 // since the last handler in the chain should be the first to
 // write the response.
+// 链式中间件
 type MiddlewareHandler interface {
 	ServeHTTP(http.ResponseWriter, *http.Request, Handler) error
 }

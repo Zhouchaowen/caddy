@@ -29,6 +29,7 @@
 package main
 
 import (
+	// 执行init函数，注册caddy命令，让caddy命令可以执行
 	caddycmd "github.com/caddyserver/caddy/v2/cmd"
 
 	// plug in Caddy modules here

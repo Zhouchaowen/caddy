@@ -263,6 +263,7 @@ type Server struct {
 }
 
 // ServeHTTP is the entry point for all HTTP requests.
+// HTTP所有请求都会通过这个函数处理
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// If there are listener wrappers that process tls connections but don't return a *tls.Conn, this field will be nil.
 	// TODO: Scheduled to be removed later because https://github.com/golang/go/pull/56110 has been merged.
@@ -367,6 +368,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// execute the primary handler chain
+	// 执行主处理程序链，中间件处理，这个primaryHandlerChain是在 caddy.run()->provisionContext()->Context.App()->Context.LoadModuleByID()->APP.Provision()
 	err := s.primaryHandlerChain.ServeHTTP(w, r)
 	duration = time.Since(start)
 

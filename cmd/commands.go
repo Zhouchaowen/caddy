@@ -34,7 +34,7 @@ type Command struct {
 	// The name of the subcommand. Must conform to the
 	// format described by the RegisterCommand() godoc.
 	// Required.
-	Name string
+	Name string // 命令名称，必须符合 RegisterCommand() 函数的规范
 
 	// Usage is a brief message describing the syntax of
 	// the subcommand's flags and args. Use [] to indicate
@@ -43,34 +43,34 @@ type Command struct {
 	// the string with "caddy" or the name of the command
 	// since these will be prepended for you; only include
 	// the actual parameters for this command.
-	Usage string
+	Usage string // 使用说明，用于显示在帮助信息中
 
 	// Short is a one-line message explaining what the
 	// command does. Should not end with punctuation.
 	// Required.
-	Short string
+	Short string // 短描述，用于显示在帮助信息中
 
 	// Long is the full help text shown to the user.
 	// Will be trimmed of whitespace on both ends before
 	// being printed.
-	Long string
+	Long string // 长描述，用于显示在帮助信息中
 
 	// Flags is the flagset for command.
 	// This is ignored if CobraFunc is set.
-	Flags *flag.FlagSet
+	Flags *flag.FlagSet // 标志集，用于设置命令的标志
 
 	// Func is a function that executes a subcommand using
 	// the parsed flags. It returns an exit code and any
 	// associated error.
 	// Required if CobraFunc is not set.
-	Func CommandFunc
+	Func CommandFunc // 命令函数，用于执行命令
 
 	// CobraFunc allows further configuration of the command
 	// via cobra's APIs. If this is set, then Func and Flags
 	// are ignored, with the assumption that they are set in
 	// this function. A caddycmd.WrapCommandFuncForCobra helper
 	// exists to simplify porting CommandFunc to Cobra's RunE.
-	CobraFunc func(*cobra.Command)
+	CobraFunc func(*cobra.Command) // 辅助函数，用于进一步配置命令
 }
 
 // CommandFunc is a command's function. It runs the
@@ -89,10 +89,11 @@ func Commands() map[string]Command {
 
 var (
 	commandsMu sync.RWMutex
-	commands   = make(map[string]Command)
+	commands   = make(map[string]Command) // 命令映射，用于存储注册的命令
 )
 
 func init() {
+	// 注册 start 命令，用于在后台启动 Caddy 进程
 	RegisterCommand(Command{
 		Name:  "start",
 		Usage: "[--config <path> [--adapter <name>]] [--envfile <path>] [--watch] [--pidfile <file>]",
@@ -118,6 +119,7 @@ using 'caddy run' instead to keep it in the foreground.
 		},
 	})
 
+	// 注册 run 命令，在前台运行 Caddy 进程
 	RegisterCommand(Command{
 		Name:  "run",
 		Usage: "[--config <path> [--adapter <name>]] [--envfile <path>] [--environ] [--resume] [--watch] [--pidfile <file>]",
@@ -167,6 +169,7 @@ option in a local development environment.
 		},
 	})
 
+	// 注册 stop 命令，用于优雅地停止 Caddy 进程
 	RegisterCommand(Command{
 		Name:  "stop",
 		Usage: "[--config <path> [--adapter <name>]] [--address <interface>]",
@@ -186,6 +189,7 @@ using the --address flag, or from the given --config, if not the default.
 		},
 	})
 
+	// 注册 reload 命令，用于重新加载 Caddy 配置
 	RegisterCommand(Command{
 		Name:  "reload",
 		Usage: "--config <path> [--adapter <name>] [--address <interface>]",

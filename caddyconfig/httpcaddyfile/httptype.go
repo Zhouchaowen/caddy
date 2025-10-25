@@ -78,6 +78,7 @@ func (st ServerType) Setup(
 			pile:  make(map[string][]ConfigValue),
 		})
 	}
+	// debug print originalServerBlocks
 
 	// apply any global options
 	var err error
@@ -125,6 +126,7 @@ func (st ServerType) Setup(
 				continue
 			}
 
+			// 构建指令对应的处理函数
 			dirFunc, ok := registeredDirectives[dir]
 			if !ok {
 				tkn := segment[0]
@@ -859,6 +861,7 @@ func (st *ServerType) serversFromPairings(
 			}
 
 			// add the site block's route(s) to the server
+			// 将 siteSubroute 添加到 server.Routes 中
 			srv.Routes = appendSubrouteToRouteList(srv.Routes, siteSubroute, matcherSetsEnc, p, warnings)
 
 			// if error routes are defined, add those too
