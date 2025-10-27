@@ -102,8 +102,17 @@ func handlePingbackConn(conn net.Conn, expect []byte) error {
 // there is no config available. It prints any warnings to stderr,
 // and returns the resulting JSON config bytes along with
 // the name of the loaded config file (if any).
+<<<<<<< HEAD
 // 加载配置文件，并使用指定的适配器进行适配
 func LoadConfig(configFile, adapterName string) ([]byte, string, error) {
+=======
+// The return values are:
+//   - config bytes (nil if no config)
+//   - config file used ("" if none)
+//   - adapter used ("" if none)
+//   - error, if any
+func LoadConfig(configFile, adapterName string) ([]byte, string, string, error) {
+>>>>>>> abe0acabb61b0151f58c7b750d3963dbbffe7270
 	return loadConfigWithLogger(caddy.Log(), configFile, adapterName)
 }
 
@@ -141,7 +150,7 @@ func isCaddyfile(configFile, adapterName string) (bool, error) {
 	return false, nil
 }
 
-func loadConfigWithLogger(logger *zap.Logger, configFile, adapterName string) ([]byte, string, error) {
+func loadConfigWithLogger(logger *zap.Logger, configFile, adapterName string) ([]byte, string, string, error) {
 	// if no logger is provided, use a nop logger
 	// just so we don't have to check for nil
 	if logger == nil {
@@ -150,7 +159,7 @@ func loadConfigWithLogger(logger *zap.Logger, configFile, adapterName string) ([
 
 	// specifying an adapter without a config file is ambiguous
 	if adapterName != "" && configFile == "" {
-		return nil, "", fmt.Errorf("cannot adapt config without config file (use --config)")
+		return nil, "", "", fmt.Errorf("cannot adapt config without config file (use --config)")
 	}
 
 	// load initial config and adapter
@@ -161,13 +170,13 @@ func loadConfigWithLogger(logger *zap.Logger, configFile, adapterName string) ([
 		if configFile == "-" {
 			config, err = io.ReadAll(os.Stdin)
 			if err != nil {
-				return nil, "", fmt.Errorf("reading config from stdin: %v", err)
+				return nil, "", "", fmt.Errorf("reading config from stdin: %v", err)
 			}
 			logger.Info("using config from stdin")
 		} else {
 			config, err = os.ReadFile(configFile)
 			if err != nil {
-				return nil, "", fmt.Errorf("reading config from file: %v", err)
+				return nil, "", "", fmt.Errorf("reading config from file: %v", err)
 			}
 			logger.Info("using config from file", zap.String("file", configFile))
 		}
@@ -182,7 +191,7 @@ func loadConfigWithLogger(logger *zap.Logger, configFile, adapterName string) ([
 				cfgAdapter = nil
 			} else if err != nil {
 				// default Caddyfile exists, but error reading it
-				return nil, "", fmt.Errorf("reading default Caddyfile: %v", err)
+				return nil, "", "", fmt.Errorf("reading default Caddyfile: %v", err)
 			} else {
 				// success reading default Caddyfile
 				configFile = "Caddyfile"
@@ -194,14 +203,14 @@ func loadConfigWithLogger(logger *zap.Logger, configFile, adapterName string) ([
 	if yes, err := isCaddyfile(configFile, adapterName); yes {
 		adapterName = "caddyfile"
 	} else if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 
 	// load config adapter
 	if adapterName != "" {
 		cfgAdapter = caddyconfig.GetAdapter(adapterName)
 		if cfgAdapter == nil {
-			return nil, "", fmt.Errorf("unrecognized config adapter: %s", adapterName)
+			return nil, "", "", fmt.Errorf("unrecognized config adapter: %s", adapterName)
 		}
 	}
 
@@ -212,7 +221,7 @@ func loadConfigWithLogger(logger *zap.Logger, configFile, adapterName string) ([
 			"filename": configFile,
 		})
 		if err != nil {
-			return nil, "", fmt.Errorf("adapting config using %s: %v", adapterName, err)
+			return nil, "", "", fmt.Errorf("adapting config using %s: %v", adapterName, err)
 		}
 		logger.Info("adapted config to JSON", zap.String("adapter", adapterName))
 		for _, warn := range warnings {
@@ -230,11 +239,11 @@ func loadConfigWithLogger(logger *zap.Logger, configFile, adapterName string) ([
 		// validate that the config is at least valid JSON
 		err = json.Unmarshal(config, new(any))
 		if err != nil {
-			return nil, "", fmt.Errorf("config is not valid JSON: %v; did you mean to use a config adapter (the --adapter flag)?", err)
+			return nil, "", "", fmt.Errorf("config is not valid JSON: %v; did you mean to use a config adapter (the --adapter flag)?", err)
 		}
 	}
 
-	return config, configFile, nil
+	return config, configFile, adapterName, nil
 }
 
 // watchConfigFile watches the config file at filename for changes
@@ -261,7 +270,7 @@ func watchConfigFile(filename, adapterName string) {
 	}
 
 	// get current config
-	lastCfg, _, err := loadConfigWithLogger(nil, filename, adapterName)
+	lastCfg, _, _, err := loadConfigWithLogger(nil, filename, adapterName)
 	if err != nil {
 		logger().Error("unable to load latest config", zap.Error(err))
 		return
@@ -273,7 +282,7 @@ func watchConfigFile(filename, adapterName string) {
 	//nolint:staticcheck
 	for range time.Tick(1 * time.Second) {
 		// get current config
-		newCfg, _, err := loadConfigWithLogger(nil, filename, adapterName)
+		newCfg, _, _, err := loadConfigWithLogger(nil, filename, adapterName)
 		if err != nil {
 			logger().Error("unable to load latest config", zap.Error(err))
 			return

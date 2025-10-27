@@ -1,11 +1,14 @@
-{
-	acme_dns mock foo
+(snippet) {
+	header {
+		reverse_proxy localhost:3000
+		{block}
+	}
 }
 
 example.com {
-	respond "Hello World"
+	import snippet
 }
-----------
+---------- 
 {
 	"apps": {
 		"http": {
@@ -30,8 +33,14 @@ example.com {
 										{
 											"handle": [
 												{
-													"body": "Hello World",
-													"handler": "static_response"
+													"handler": "headers",
+													"response": {
+														"set": {
+															"Reverse_proxy": [
+																"localhost:3000"
+															]
+														}
+													}
 												}
 											]
 										}
@@ -42,27 +51,6 @@ example.com {
 						}
 					]
 				}
-			}
-		},
-		"tls": {
-			"automation": {
-				"policies": [
-					{
-						"issuers": [
-							{
-								"challenges": {
-									"dns": {
-										"provider": {
-											"argument": "foo",
-											"name": "mock"
-										}
-									}
-								},
-								"module": "acme"
-							}
-						]
-					}
-				]
 			}
 		}
 	}

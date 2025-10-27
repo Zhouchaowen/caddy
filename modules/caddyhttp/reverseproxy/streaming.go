@@ -57,12 +57,21 @@ func (rwc h2ReadWriteCloser) Write(p []byte) (n int, err error) {
 	return n, nil
 }
 
+/*
+处理上游返回的 101 Switching Protocols（协议升级，如 WebSocket、h2c 等），
+将客户端与上游之间建立一个双向字节流隧道（hijack 或等价的方式），并在两端之间进行双向复制（proxy 二进制流）。
+同时处理 HTTP/2/3 的 extended CONNECT → HTTP/1.1 upgrade 的兼容性路径。
+*/
 func (h *Handler) handleUpgradeResponse(logger *zap.Logger, wg *sync.WaitGroup, rw http.ResponseWriter, req *http.Request, res *http.Response) {
 	reqUpType := upgradeType(req.Header)
 	resUpType := upgradeType(res.Header)
 
 	// Taken from https://github.com/golang/go/commit/5c489514bc5e61ad9b5b07bd7d8ec65d66a0512a
 	// We know reqUpType is ASCII, it's checked by the caller.
+	/*
+		校验上游返回的 upgrade 类型是可打印 ASCII，并且与原始请求期望的 upgrade 类型匹配（大小写无关）。如果不满足，就记录 debug 并返回（不建立隧道）
+		避免把不匹配或非法的升级响应透传给客户端，防止协议混淆或安全问题。
+	*/
 	if !asciiIsPrint(resUpType) {
 		if c := logger.Check(zapcore.DebugLevel, "backend tried to switch to invalid protocol"); c != nil {
 			c.Write(zap.String("backend_upgrade", resUpType))
@@ -79,6 +88,9 @@ func (h *Handler) handleUpgradeResponse(logger *zap.Logger, wg *sync.WaitGroup, 
 		return
 	}
 
+	/*
+		要把后端视为可以读写的双向连接（例如 net.Conn），所以 res.Body 必须实现 io.ReadWriteCloser。若不是，无法建立隧道，记录错误并返回。
+	*/
 	backConn, ok := res.Body.(io.ReadWriteCloser)
 	if !ok {
 		logger.Error("internal error: 101 switching protocols response with non-writable body")
@@ -87,6 +99,9 @@ func (h *Handler) handleUpgradeResponse(logger *zap.Logger, wg *sync.WaitGroup, 
 
 	// write header first, response headers should not be counted in size
 	// like the rest of handler chain.
+	/*
+		把上游返回的头拷贝到 ResponseWriter 的头部，调整 WebSocket 相关头的大小写（兼容性）。
+	*/
 	copyHeader(rw.Header(), res.Header)
 	normalizeWebsocketHeaders(rw.Header())
 
@@ -94,9 +109,14 @@ func (h *Handler) handleUpgradeResponse(logger *zap.Logger, wg *sync.WaitGroup, 
 		conn io.ReadWriteCloser
 		brw  *bufio.ReadWriter
 	)
-	// websocket over http2, assuming backend doesn't support this, the request will be modified to http1.1 upgrade
+	// websocket over http2 or http3 if extended connect is enabled, assuming backend doesn't support this, the request will be modified to http1.1 upgrade
 	// TODO: once we can reliably detect backend support this, it can be removed for those backends
-	if body, ok := caddyhttp.GetVar(req.Context(), "h2_websocket_body").(io.ReadCloser); ok {
+	/*
+		在 ServeHTTP 里，当接收到 HTTP/2 或 HTTP/3 的 CONNECT with :protocol: websocket（extended CONNECT）时，
+		Caddy 把原始 body 存到 context（键 "extended_connect_websocket_body"）并把请求改造成 HTTP/1.1 的 GET+Upgrade 去上游（因为上游可能不支持 extended CONNECT）。
+		当上游回应 101 时，代理需要把握手转换回客户端期望的行为。
+	*/
+	if body, ok := caddyhttp.GetVar(req.Context(), "extended_connect_websocket_body").(io.ReadCloser); ok {
 		req.Body = body
 		rw.Header().Del("Upgrade")
 		rw.Header().Del("Connection")
@@ -119,6 +139,10 @@ func (h *Handler) handleUpgradeResponse(logger *zap.Logger, wg *sync.WaitGroup, 
 		// bufio is not needed, use minimal buffer
 		brw = bufio.NewReadWriter(bufio.NewReaderSize(conn, 1), bufio.NewWriterSize(conn, 1))
 	} else {
+		/*
+			对于普通（HTTP/1.1）场景，代理会把 101 头写给客户端，然后调用 ResponseController.Hijack 获取底层连接（conn）和 bufio.ReadWriter（brw），
+			以便直接在底层连接上读写（跳过 HTTP handler 层）。
+		*/
 		rw.WriteHeader(res.StatusCode)
 
 		if c := logger.Check(zap.DebugLevel, "upgrading connection"); c != nil {
@@ -144,6 +168,10 @@ func (h *Handler) handleUpgradeResponse(logger *zap.Logger, wg *sync.WaitGroup, 
 	}
 
 	// adopted from https://github.com/golang/go/commit/8bcf2834afdf6a1f7937390903a41518715ef6f5
+	/*
+		启动 goroutine，监听请求上下文被取消（客户端断开或超时）或当本函数退出（通过关闭 backConnCloseCh）时，确保关闭后端连接（backConn）。
+		这样可以避免在客户端关闭时后端连接泄露。
+	*/
 	backConnCloseCh := make(chan struct{})
 	go func() {
 		// Ensure that the cancellation of a request closes the backend.
@@ -164,6 +192,11 @@ func (h *Handler) handleUpgradeResponse(logger *zap.Logger, wg *sync.WaitGroup, 
 		}
 	}()
 
+	/*
+		在 hijack 得到 brw（或 h2 分支得到小缓冲 brw）后，先 flush；
+		然后检查 bufio.Reader 中是否有已读但未消费的缓冲数据（可能是客户端在握手时已发送的部分数据），
+		如果存在则把这些数据写入后端，保证没有已读数据丢失（这修复了历史 issues，客户端可能在升级握手阶段就已经发送了部分应用层数据）。
+	*/
 	if err := brw.Flush(); err != nil {
 		if c := logger.Check(zapcore.DebugLevel, "response flush"); c != nil {
 			c.Write(zap.Error(err))
@@ -191,6 +224,10 @@ func (h *Handler) handleUpgradeResponse(logger *zap.Logger, wg *sync.WaitGroup, 
 	// We need to make sure the client connection messages (i.e. to upstream)
 	// are masked, so we need to know whether the connection is considered the
 	// server or the client side of the proxy.
+	/*
+		registerConnection 将连接存进 h.connections map，并返回一个删除函数，在连接结束时调用以从 map 中移除。这样在 server 关闭/cleanup 时可以统一关闭这些 hijacked 连接。
+		对 websocket 连接尝试做 gracefulClose：在关闭时发送一个 WebSocket Close 控制帧（通过 writeCloseControl），以便尽可能做到优雅关闭。
+	*/
 	gracefulClose := func(conn io.ReadWriteCloser, isClient bool) func() error {
 		if isWebsocket(req) {
 			return func() error {
@@ -214,6 +251,15 @@ func (h *Handler) handleUpgradeResponse(logger *zap.Logger, wg *sync.WaitGroup, 
 		timeoutc = timer.C
 	}
 
+	/*
+		启动双向复制的 goroutine（真正的数据转发）
+
+		wg 是由调用者（finalizeResponse）传入并在外面 Wait 的：finalizeResponse 在调用 handleUpgradeResponse 后立即 wg.Wait()，
+		因此 finalizeResponse 不会返回直到 wg.Done() 两次（复制 goroutine 结束）。这保证 ServeHTTP 会在隧道关闭前等待，或直到拷贝结束。
+		errc 用于接收两条复制路径的第一个错误（或 EOF）；select 等待复制出错或超时（如果 StreamTimeout 配置了）。
+
+		进行阻塞的双向字节流复制，并在任一方向报错或到期时结束。
+	*/
 	errc := make(chan error, 1)
 	wg.Add(2)
 	go spc.copyToBackend(errc)
@@ -588,11 +634,11 @@ func (m *maxLatencyWriter) Write(p []byte) (n int, err error) {
 		m.logger.Debug("flushing immediately")
 		//nolint:errcheck
 		m.flush()
-		return
+		return n, err
 	}
 	if m.flushPending {
 		m.logger.Debug("delayed flush already pending")
-		return
+		return n, err
 	}
 	if m.t == nil {
 		m.t = time.AfterFunc(m.latency, m.delayedFlush)
@@ -603,7 +649,7 @@ func (m *maxLatencyWriter) Write(p []byte) (n int, err error) {
 		c.Write(zap.Duration("duration", m.latency))
 	}
 	m.flushPending = true
-	return
+	return n, err
 }
 
 func (m *maxLatencyWriter) delayedFlush() {

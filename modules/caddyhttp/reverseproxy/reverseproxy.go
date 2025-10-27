@@ -409,12 +409,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		return caddyhttp.Error(http.StatusInternalServerError,
 			fmt.Errorf("preparing request for upstream round-trip: %v", err))
 	}
-	// websocket over http2, assuming backend doesn't support this, the request will be modified to http1.1 upgrade
+
+	// websocket over http2 or http3 if extended connect is enabled, assuming backend doesn't support this, the request will be modified to http1.1 upgrade
+	// Both use the same upgrade mechanism: server advertizes extended connect support, and client sends the pseudo header :protocol in a CONNECT request
+	// The quic-go http3 implementation also puts :protocol in r.Proto for CONNECT requests (quic-go/http3/headers.go@70-72,185,203)
 	// TODO: once we can reliably detect backend support this, it can be removed for those backends
-	if r.ProtoMajor == 2 && r.Method == http.MethodConnect && r.Header.Get(":protocol") == "websocket" {
+	/*
+		HTTP/2 / HTTP/3 的 Extended CONNECT（RFC 8441）允许客户端在 HTTP/2/3 上通过发送 CONNECT 请求并带上伪头 :protocol: websocket 来建立 WebSocket（或其它协议）隧道，而不是使用传统的 HTTP/1.1 的 GET + Upgrade: websocket 握手。
+		许多后端（上游）并不支持在 HTTP/2/3 上的 extended CONNECT（它们期望 HTTP/1.1 的 Upgrade 语义）。因此当 Caddy 接到一个来自客户端的 extended CONNECT 请求时，
+		如果假定上游不支持 extended CONNECT，则需要把该请求“转换”为传统的 HTTP/1.1 WebSocket Upgrade 请求去代理给后端。
+		下面的代码就是做这样的转换（把 EXTENDED CONNECT 转成 HTTP/1.1 的 GET + Upgrade）
+	*/
+	if (r.ProtoMajor == 2 && r.Method == http.MethodConnect && r.Header.Get(":protocol") == "websocket") ||
+		(r.ProtoMajor == 3 && r.Method == http.MethodConnect && r.Proto == "websocket") {
 		clonedReq.Header.Del(":protocol")
 		// keep the body for later use. http1.1 upgrade uses http.NoBody
-		caddyhttp.SetVar(clonedReq.Context(), "h2_websocket_body", clonedReq.Body)
+		caddyhttp.SetVar(clonedReq.Context(), "extended_connect_websocket_body", clonedReq.Body)
 		clonedReq.Body = http.NoBody
 		clonedReq.Method = http.MethodGet
 		clonedReq.Header.Set("Upgrade", "websocket")
@@ -520,9 +530,17 @@ func (h *Handler) proxyLoopIteration(r *http.Request, origReq *http.Request, w h
 	// choose an available upstream
 	upstream := h.LoadBalancing.SelectionPolicy.Select(upstreams, r, w)
 	if upstream == nil {
+		/*
+			如果没有选中（例如没有可用 upstream），构造 errNoUpstream（或保留上次错误），
+			然后调用 tryAgain 判断是否继续等待/重试（基于 Retries / TryDuration / TryInterval / RetryMatch 等）
+		*/
 		if proxyErr == nil {
 			proxyErr = caddyhttp.Error(http.StatusServiceUnavailable, errNoUpstream)
 		}
+		/*
+			tryAgain 使用 start 时间和 retries 计数去判断是否耗时过多或次数达到上限，
+			也会检查错误类型决定是否允许重试（例如拨号错误允许重试，但非拨号后产生的错误只有在满足 RetryMatch 的情况下才允许重试）。
+		*/
 		if !h.LoadBalancing.tryAgain(h.ctx, start, retries, proxyErr, r, h.logger) {
 			return true, proxyErr
 		}
@@ -532,6 +550,9 @@ func (h *Handler) proxyLoopIteration(r *http.Request, origReq *http.Request, w h
 	// the dial address may vary per-request if placeholders are
 	// used, so perform those replacements here; the resulting
 	// DialInfo struct should have valid network address syntax
+	/*
+		此处会对 upstream 配置中使用的占位符进行替换（这也是为什么 prepareRequest 早先设置 replacer、并且在每次尝试前会设置 upstream.* 占位符的原因）
+	*/
 	dialInfo, err := upstream.fillDialInfo(repl)
 	if err != nil {
 		return true, fmt.Errorf("making dial info: %v", err)
@@ -562,6 +583,12 @@ func (h *Handler) proxyLoopIteration(r *http.Request, origReq *http.Request, w h
 	// because we're in a retry loop, we have to copy
 	// headers (and the r.Host value) from the original
 	// so that each retry is identical to the first
+	/*
+		由于处于重试循环，必须保证每次尝试都是“从相同的初始请求状态”开始。reqHeader 和 reqHost 在 ServeHTTP 早前保存（它们是 prepareRequest 返回后的初始值，包含 rewrite、前端处理等结果）。
+
+		这里新建 header map，然后把 reqHeader 的值拷贝进去（copyHeader 做逐键逐值的 Add），并把 Host 恢复为 reqHost。
+		这样后续 ApplyToRequest（headers 模块）会在这个干净的起态上进行修改，而不会把之前尝试中对 r.Header 的改变累积到下一次尝试。
+	*/
 	if h.Headers != nil && h.Headers.Request != nil {
 		r.Header = make(http.Header)
 		copyHeader(r.Header, reqHeader)
@@ -570,10 +597,18 @@ func (h *Handler) proxyLoopIteration(r *http.Request, origReq *http.Request, w h
 	}
 
 	// proxy the request to that upstream
+	/*
+		调用 reverseProxy 来执行实际 roundtrip
+	*/
 	proxyErr = h.reverseProxy(w, r, origReq, repl, dialInfo, next)
 	if proxyErr == nil || errors.Is(proxyErr, context.Canceled) {
 		// context.Canceled happens when the downstream client
 		// cancels the request, which is not our failure
+		/*
+			如果 reverseProxy 返回 nil：表示 roundtrip 和响应处理成功，函数返回 done=true, nil（整个 ServeHTTP 循环结束并视为成功）
+
+			如果 error 是 context.Canceled（客户端取消连接），这里认为不是代理的失败（客户端已断开），也返回 done=true, nil（上游请求不可重试且客户端已断开，不应尝试重试）
+		*/
 		return true, nil
 	}
 
@@ -581,10 +616,17 @@ func (h *Handler) proxyLoopIteration(r *http.Request, origReq *http.Request, w h
 	// ding the health status of the upstream (an error can still
 	// occur after the roundtrip if, for example, a response handler
 	// after the roundtrip returns an error)
+	/*
+		reverseProxy 内部在某些情形（roundtrip 到 upstream 成功，但后续处理（例如 handle_response route）出错），会把该 route 错误包一层 roundtripSucceededError 返回。
+		其含义：上游已经成功完成 roundtrip，不应重试（因为上游可能已接收请求）；但是上层需要把 route 错误当作最终应返回的错误。
+	*/
 	if succ, ok := proxyErr.(roundtripSucceededError); ok {
 		return true, succ.error
 	}
 
+	/*
+		countFailure 会将这次失败计入 upstream 的状态计数（passive health checks 相关），用于后续判断上游是否应该被标记为不健康并暂时从选择池中排除。
+	*/
 	// remember this failure (if enabled)
 	h.countFailure(upstream)
 
@@ -762,7 +804,14 @@ func (h Handler) prepareRequest(req *http.Request, repl *caddy.Replacer) (*http.
 	proxyProtocolInfo := ProxyProtocolInfo{AddrPort: addrPort}
 	caddyhttp.SetVar(req.Context(), proxyProtocolInfoVarKey, proxyProtocolInfo)
 
+	// some of the outbound requests require h1 (e.g. websocket)
+	// https://github.com/golang/go/blob/4837fbe4145cd47b43eed66fee9eed9c2b988316/src/net/http/request.go#L1579
+	if isWebsocket(req) {
+		caddyhttp.SetVar(req.Context(), tlsH1OnlyVarKey, true)
+	}
+
 	// Add the supported X-Forwarded-* headers
+	// 添加 X-Forwarded-* 系列头
 	err = h.addForwardedHeaders(req)
 	if err != nil {
 		return nil, err
@@ -868,6 +917,10 @@ func (h *Handler) reverseProxy(rw http.ResponseWriter, req *http.Request, origRe
 	defer di.Upstream.Host.countRequest(-1)
 
 	// point the request to this upstream
+	/*
+		把 req.URL.Host 设置为 di.Address（或 di.Host），并在需要时把客户端地址信息附加到 Host（用于自定义 transport 区分不同客户端、proxy_protocol 情形）。
+		重要：directRequest 只修改 URL（保证请求其它字段不被非必要改变），拨号细节（network, SNI 等）由 transport 通过从上下文读取 di 处理。
+	*/
 	h.directRequest(req, di)
 
 	server := req.Context().Value(caddyhttp.ServerCtxKey).(*caddyhttp.Server)
@@ -944,11 +997,19 @@ func (h *Handler) reverseProxy(rw http.ResponseWriter, req *http.Request, origRe
 	repl.Set("http.reverse_proxy.upstream.latency_ms", duration.Seconds()*1e3) // multiply seconds to preserve decimal (see #4666)
 
 	// update circuit breaker on current conditions
+	/*
+		如果 upstream 绑定了 circuit breaker，则把这次 roundtrip 的状态码与 latency 汇报给 CB，CB 可能基于策略打开/关闭。
+	*/
 	if di.Upstream.cb != nil {
 		di.Upstream.cb.RecordMetric(res.StatusCode, duration)
 	}
 
 	// perform passive health checks (if enabled)
+	/*
+		被动健康检查配置
+		若返回状态码匹配被认为“不健康”的模式，就对该 upstream 增加一次 failure（h.countFailure 会更新 upstream.Host 的失败计数、可能触发下线）。
+		若响应延迟超过阈值，也计一次 failure。
+	*/
 	if h.HealthChecks != nil && h.HealthChecks.Passive != nil {
 		// strike if the status code matches one that is "bad"
 		for _, badStatus := range h.HealthChecks.Passive.UnhealthyStatus {
@@ -965,6 +1026,10 @@ func (h *Handler) reverseProxy(rw http.ResponseWriter, req *http.Request, origRe
 	}
 
 	// if enabled, buffer the response body
+	/*
+		如果配置了 response buffering，会把上游的响应 body 读入缓冲并用 bodyReadCloser 包装，便于后续处理（例如 handle_response 里可能要 copy_response）。
+		bufferedBody 使用 bufPool 减少分配，但注意缓冲会增加内存消耗，配置须谨慎。
+	*/
 	if h.ResponseBuffers != 0 {
 		res.Body, _ = h.bufferedBody(res.Body, h.ResponseBuffers)
 	}
@@ -1052,6 +1117,10 @@ func (h *Handler) finalizeResponse(
 	logger *zap.Logger,
 ) error {
 	// deal with 101 Switching Protocols responses: (WebSocket, h2c, etc)
+	/*
+		当上游返回 101（例如 WebSocket、h2c 的升级）时，不能用常规的拷贝逻辑，要进行连接升级处理（通常需要 hijack 或建立双向字节流转发）。
+		finalizeResponse 将请求交给 handleUpgradeResponse 来做升级隧道的建立与双向拷贝，然后等待（wg.Wait）直到升级处理完成，返回 nil 表示已成功处理升级路径。
+	*/
 	if res.StatusCode == http.StatusSwitchingProtocols {
 		var wg sync.WaitGroup
 		h.handleUpgradeResponse(logger, &wg, rw, req, res)
@@ -1074,6 +1143,10 @@ func (h *Handler) finalizeResponse(
 	rw.Header().Add("Via", fmt.Sprintf("%s%d.%d Caddy", protoPrefix, res.ProtoMajor, res.ProtoMinor))
 
 	// apply any response header operations
+	/*
+		如果用户在 reverse_proxy 配置中设置了 response header 操作（例如添加、删除、替换 header），在将 header 发回客户端之前会在这里应用。
+		Require 用来限制仅在某些状态码或 header 条件下应用这些操作。ApplyTo 能使用 replacer（repl）中的占位符（例如 upstream.*）进行动态替换。
+	*/
 	if h.Headers != nil && h.Headers.Response != nil {
 		if h.Headers.Response.Require == nil ||
 			h.Headers.Response.Require.Match(res.StatusCode, res.Header) {
@@ -1085,6 +1158,11 @@ func (h *Handler) finalizeResponse(
 
 	// The "Trailer" header isn't included in the Transport's response,
 	// at least for *http.Transport. Build it up from Trailer.
+	/*
+		标准库的 Transport（至少 *http.Transport）通常不会把 Trailer header 放回 res.Header 里，而是放在 res.Trailer map。
+		要让客户端知道会发送哪些 trailer（告知要使用 chunked 编码并在结束后发送 trailer），代理必须在响应头里添加 "Trailer": "<keys>"。
+		这一步就是从 res.Trailer 的 map 构建 Trailer 报头。
+	*/
 	announcedTrailers := len(res.Trailer)
 	if announcedTrailers > 0 {
 		trailerKeys := make([]string, 0, len(res.Trailer))
@@ -1119,6 +1197,10 @@ func (h *Handler) finalizeResponse(
 		panic(http.ErrAbortHandler)
 	}
 
+	/*
+		因为不同 Transport 对 Trailer 的支持和填充时机不一致（有时在 res.Body.Close() 后填充），
+		代理必须在复制 body 前公告 Trailer 键，并在 body 复制结束后把实际 trailers 写回或作为 Trailer- 前缀添加到头部。
+	*/
 	if len(res.Trailer) > 0 {
 		// Force chunking if we saw a response trailer.
 		// This prevents net/http from calculating the length for short
@@ -1224,7 +1306,7 @@ func (lb LoadBalancing) tryAgain(ctx caddy.Context, start time.Time, retries int
 
 // directRequest modifies only req.URL so that it points to the upstream
 // in the given DialInfo. It must modify ONLY the request URL.
-func (Handler) directRequest(req *http.Request, di DialInfo) {
+func (h *Handler) directRequest(req *http.Request, di DialInfo) {
 	// we need a host, so set the upstream's host address
 	reqHost := di.Address
 
@@ -1233,6 +1315,13 @@ func (Handler) directRequest(req *http.Request, di DialInfo) {
 	if (req.URL.Scheme == "http" && di.Port == "80") ||
 		(req.URL.Scheme == "https" && di.Port == "443") {
 		reqHost = di.Host
+	}
+
+	// add client address to the host to let transport differentiate requests from different clients
+	if ht, ok := h.Transport.(*HTTPTransport); ok && ht.ProxyProtocol != "" {
+		if proxyProtocolInfo, ok := caddyhttp.GetVar(req.Context(), proxyProtocolInfoVarKey).(ProxyProtocolInfo); ok {
+			reqHost = proxyProtocolInfo.AddrPort.String() + "->" + reqHost
+		}
 	}
 
 	req.URL.Host = reqHost

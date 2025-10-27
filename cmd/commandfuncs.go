@@ -173,9 +173,19 @@ func cmdRun(fl Flags) (int, error) {
 	// 设置捕获信号
 	caddy.TrapSignals()
 
-	logger := caddy.Log()
+	// set up buffered logging for early startup
+	// so that we can hold onto logs until after
+	// the config is loaded (or fails to load)
+	// so that we can write the logs to the user's
+	// configured output. we must be sure to flush
+	// on any error before the config is loaded.
+	logger, defaultLogger, logBuffer := caddy.BufferedLog()
+
 	undoMaxProcs := setResourceLimits(logger)
 	defer undoMaxProcs()
+	// release the local reference to the undo function so it can be GC'd;
+	// the deferred call above has already captured the actual function value.
+	undoMaxProcs = nil //nolint:ineffassign,wastedassign
 
 	configFlag := fl.String("config")
 	configAdapterFlag := fl.String("adapter")
@@ -189,6 +199,7 @@ func cmdRun(fl Flags) (int, error) {
 	// 加载环境变量文件
 	err := handleEnvFileFlag(fl)
 	if err != nil {
+		logBuffer.FlushTo(defaultLogger)
 		return caddy.ExitCodeFailedStartup, err
 	}
 
@@ -207,6 +218,7 @@ func cmdRun(fl Flags) (int, error) {
 			logger.Info("no autosave file exists", zap.String("autosave_file", caddy.ConfigAutosavePath))
 			resumeFlag = false
 		} else if err != nil {
+			logBuffer.FlushTo(defaultLogger)
 			return caddy.ExitCodeFailedStartup, err
 		} else {
 			if configFlag == "" {
@@ -224,9 +236,11 @@ func cmdRun(fl Flags) (int, error) {
 	// 如果不是恢复模式，从指定配置文件加载
 	// we don't use 'else' here since this value might have been changed in 'if' block; i.e. not mutually exclusive
 	var configFile string
+	var adapterUsed string
 	if !resumeFlag {
-		config, configFile, err = LoadConfig(configFlag, configAdapterFlag)
+		config, configFile, adapterUsed, err = LoadConfig(configFlag, configAdapterFlag)
 		if err != nil {
+			logBuffer.FlushTo(defaultLogger)
 			return caddy.ExitCodeFailedStartup, err
 		}
 	}
@@ -242,6 +256,7 @@ func cmdRun(fl Flags) (int, error) {
 		}
 	}
 
+<<<<<<< HEAD
 	/*
 		{
 			"config": {
@@ -289,11 +304,37 @@ func cmdRun(fl Flags) (int, error) {
 	logger.Warn("config", zap.String("config", string(config)))
 
 	// 加载初始配置
+=======
+	// If we have a source config file (we're running via 'caddy run --config ...'),
+	// record it so SIGUSR1 can reload from the same file. Also provide a callback
+	// that knows how to load/adapt that source when requested by the main process.
+	if configFile != "" {
+		caddy.SetLastConfig(configFile, adapterUsed, func(file, adapter string) error {
+			cfg, _, _, err := LoadConfig(file, adapter)
+			if err != nil {
+				return err
+			}
+			return caddy.Load(cfg, true)
+		})
+	}
+
+>>>>>>> abe0acabb61b0151f58c7b750d3963dbbffe7270
 	// run the initial config
 	err = caddy.Load(config, true)
 	if err != nil {
+		logBuffer.FlushTo(defaultLogger)
 		return caddy.ExitCodeFailedStartup, fmt.Errorf("loading initial config: %v", err)
 	}
+	// release the reference to the config so it can be GC'd
+	config = nil //nolint:ineffassign,wastedassign
+
+	// at this stage the config will have replaced the
+	// default logger to the configured one, so we can
+	// log normally, now that the config is running.
+	// also clear our ref to the buffer so it can get GC'd
+	logger = caddy.Log()
+	defaultLogger = nil //nolint:ineffassign,wastedassign
+	logBuffer = nil     //nolint:wastedassign,ineffassign
 	logger.Info("serving initial configuration")
 
 	// 如果需要报告另一个进程的成功的启动，则现在通过回显 stdin 的内容来报告
@@ -310,19 +351,23 @@ func cmdRun(fl Flags) (int, error) {
 			return caddy.ExitCodeFailedStartup,
 				fmt.Errorf("dialing confirmation address: %v", err)
 		}
-		defer conn.Close()
 		_, err = conn.Write(confirmationBytes)
 		if err != nil {
 			return caddy.ExitCodeFailedStartup,
 				fmt.Errorf("writing confirmation bytes to %s: %v", pingbackFlag, err)
 		}
+		// close (non-defer because we `select {}` below)
+		// and release references so they can be GC'd
+		conn.Close()
+		confirmationBytes = nil //nolint:ineffassign,wastedassign
+		conn = nil              //nolint:wastedassign,ineffassign
 	}
 
 	// 如果启用，则自动重新加载配置文件（这最好只用于开发！）
 	// if enabled, reload config file automatically on changes
 	// (this better only be used in dev!)
 	if watchFlag {
-		go watchConfigFile(configFile, configAdapterFlag)
+		go watchConfigFile(configFile, adapterUsed)
 	}
 
 	// 警告如果环境没有提供足够的信息关于磁盘
@@ -345,7 +390,13 @@ func cmdRun(fl Flags) (int, error) {
 		}
 	}
 
+<<<<<<< HEAD
 	// 阻塞主线程，保持服务运行
+=======
+	// release the last local logger reference
+	logger = nil //nolint:wastedassign,ineffassign
+
+>>>>>>> abe0acabb61b0151f58c7b750d3963dbbffe7270
 	select {}
 }
 
@@ -376,7 +427,7 @@ func cmdReload(fl Flags) (int, error) {
 	forceFlag := fl.Bool("force")
 
 	// get the config in caddy's native format
-	config, configFile, err := LoadConfig(configFlag, configAdapterFlag)
+	config, configFile, adapterUsed, err := LoadConfig(configFlag, configAdapterFlag)
 	if err != nil {
 		return caddy.ExitCodeFailedStartup, err
 	}
@@ -394,6 +445,10 @@ func cmdReload(fl Flags) (int, error) {
 	if forceFlag {
 		headers.Set("Cache-Control", "must-revalidate")
 	}
+	// Provide the source file/adapter to the running process so it can
+	// preserve its last-config knowledge if this reload came from the same source.
+	headers.Set("Caddy-Config-Source-File", configFile)
+	headers.Set("Caddy-Config-Source-Adapter", adapterUsed)
 
 	resp, err := AdminAPIRequest(adminAddr, http.MethodPost, "/load", headers, bytes.NewReader(config))
 	if err != nil {
@@ -608,7 +663,7 @@ func cmdValidateConfig(fl Flags) (int, error) {
 			fmt.Errorf("input file required when there is no Caddyfile in current directory (use --config flag)")
 	}
 
-	input, _, err := LoadConfig(configFlag, adapterFlag)
+	input, _, _, err := LoadConfig(configFlag, adapterFlag)
 	if err != nil {
 		return caddy.ExitCodeFailedStartup, err
 	}
@@ -823,7 +878,7 @@ func DetermineAdminAPIAddress(address string, config []byte, configFile, configA
 		loadedConfig := config
 		if len(loadedConfig) == 0 {
 			// get the config in caddy's native format
-			loadedConfig, loadedConfigFile, err = LoadConfig(configFile, configAdapter)
+			loadedConfig, loadedConfigFile, _, err = LoadConfig(configFile, configAdapter)
 			if err != nil {
 				return "", err
 			}
