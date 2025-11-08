@@ -102,17 +102,14 @@ func handlePingbackConn(conn net.Conn, expect []byte) error {
 // there is no config available. It prints any warnings to stderr,
 // and returns the resulting JSON config bytes along with
 // the name of the loaded config file (if any).
-<<<<<<< HEAD
-// 加载配置文件，并使用指定的适配器进行适配
-func LoadConfig(configFile, adapterName string) ([]byte, string, error) {
-=======
 // The return values are:
 //   - config bytes (nil if no config)
 //   - config file used ("" if none)
 //   - adapter used ("" if none)
 //   - error, if any
+//
+// 加载配置文件，并使用指定的适配器进行适配
 func LoadConfig(configFile, adapterName string) ([]byte, string, string, error) {
->>>>>>> abe0acabb61b0151f58c7b750d3963dbbffe7270
 	return loadConfigWithLogger(caddy.Log(), configFile, adapterName)
 }
 

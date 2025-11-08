@@ -256,7 +256,19 @@ func cmdRun(fl Flags) (int, error) {
 		}
 	}
 
-<<<<<<< HEAD
+	// If we have a source config file (we're running via 'caddy run --config ...'),
+	// record it so SIGUSR1 can reload from the same file. Also provide a callback
+	// that knows how to load/adapt that source when requested by the main process.
+	if configFile != "" {
+		caddy.SetLastConfig(configFile, adapterUsed, func(file, adapter string) error {
+			cfg, _, _, err := LoadConfig(file, adapter)
+			if err != nil {
+				return err
+			}
+			return caddy.Load(cfg, true)
+		})
+	}
+
 	/*
 		{
 			"config": {
@@ -303,22 +315,6 @@ func cmdRun(fl Flags) (int, error) {
 	*/
 	logger.Warn("config", zap.String("config", string(config)))
 
-	// 加载初始配置
-=======
-	// If we have a source config file (we're running via 'caddy run --config ...'),
-	// record it so SIGUSR1 can reload from the same file. Also provide a callback
-	// that knows how to load/adapt that source when requested by the main process.
-	if configFile != "" {
-		caddy.SetLastConfig(configFile, adapterUsed, func(file, adapter string) error {
-			cfg, _, _, err := LoadConfig(file, adapter)
-			if err != nil {
-				return err
-			}
-			return caddy.Load(cfg, true)
-		})
-	}
-
->>>>>>> abe0acabb61b0151f58c7b750d3963dbbffe7270
 	// run the initial config
 	err = caddy.Load(config, true)
 	if err != nil {
@@ -390,13 +386,10 @@ func cmdRun(fl Flags) (int, error) {
 		}
 	}
 
-<<<<<<< HEAD
-	// 阻塞主线程，保持服务运行
-=======
 	// release the last local logger reference
 	logger = nil //nolint:wastedassign,ineffassign
 
->>>>>>> abe0acabb61b0151f58c7b750d3963dbbffe7270
+	// 阻塞主线程，保持服务运行
 	select {}
 }
 
